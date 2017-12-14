@@ -110,6 +110,9 @@ class MusicPlayer(EventEmitter, Serializable):
         self._stderr_future = None
 
         self.playlist.on('entry-added', self.on_entry_added)
+        self.playlist.on('entry-removed', self.on_entry_removed)
+        self.repeatState = MusicPlayerRepeatState.NONE
+        self.skipRepeat = False
         self.loop.create_task(self.websocket_check())
 
     @property
@@ -128,7 +131,19 @@ class MusicPlayer(EventEmitter, Serializable):
 
         self.emit('entry-added', player=self, playlist=playlist, entry=entry)
 
+    def on_entry_removed(self, playlist, entry):
+        if not self.bot.config.save_videos and entry:
+            if any([entry.filename == e.filename for e in self.playlist.entries]):
+                print("[Config:SaveVideos] Skipping deletion, found song in queue")
+            elif entry.filename == self._current_entry.filename:                
+                print("[Config:SaveVideos] Skipping deletion, song removed from queue is currently playing")
+            else:
+                # print("[Config:SaveVideos] Deleting file: %s" % os.path.relpath(entry.filename))
+                asyncio.ensure_future(self._delete_file(entry.filename))
+
     def skip(self):
+        if self.is_repeatSingle:
+            self.skipRepeat = True;
         self._kill_current_player()
 
     def stop(self):
@@ -166,6 +181,17 @@ class MusicPlayer(EventEmitter, Serializable):
 
         raise ValueError('Cannot pause a MusicPlayer in state %s' % self.state)
 
+    def repeat(self):
+        if self.is_repeatNone:
+            self.repeatState = MusicPlayerRepeatState.ALL
+            return
+        if self.is_repeatAll:
+            self.repeatState = MusicPlayerRepeatState.SINGLE
+            return
+        if self.is_repeatSingle:
+            self.repeatState = MusicPlayerRepeatState.NONE
+            return
+
     def kill(self):
         self.state = MusicPlayerState.DEAD
         self.playlist.clear()
@@ -174,6 +200,12 @@ class MusicPlayer(EventEmitter, Serializable):
 
     def _playback_finished(self):
         entry = self._current_entry
+
+        if self.is_repeatAll or (self.is_repeatSingle and not self.skipRepeat):
+            self.playlist._add_entry(entry)
+            if self.is_repeatSingle:            
+                self.playlist.promote_last()
+        self.skipRepeat = False
 
         if self._current_player:
             self._current_player.after = None
@@ -263,7 +295,8 @@ class MusicPlayer(EventEmitter, Serializable):
 
                 boptions = "-nostdin"
                 # aoptions = "-vn -b:a 192k"
-                aoptions = "-vn"
+                # aoptions = "-vn"
+                aoptions = "-vn -b:a 128k"
 
                 log.ffmpeg("Creating player with options: {} {} {}".format(boptions, aoptions, entry.filename))
 
@@ -388,6 +421,18 @@ class MusicPlayer(EventEmitter, Serializable):
     @property
     def is_dead(self):
         return self.state == MusicPlayerState.DEAD
+
+    @property
+    def is_repeatNone(self):
+        return self.repeatState == MusicPlayerRepeatState.NONE
+
+    @property
+    def is_repeatAll(self):
+        return self.repeatState == MusicPlayerRepeatState.ALL
+
+    @property
+    def is_repeatSingle(self):
+        return self.repeatState == MusicPlayerRepeatState.SINGLE
 
     @property
     def progress(self):
